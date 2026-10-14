@@ -1623,7 +1623,7 @@ Teams that already run OPA can use the `evidence` object of `repowise check --fo
 
 ### `repowise events`
 
-Typed events between consecutive index runs. Each `init` and `update` stores a snapshot of every component (ownership counts, bus factor, hotspots, dead code, governing decisions, provided contracts, test reach, attribution with coverage) under the analyzer and parser stamp it ran with. When two runs in a row share a stamp, what moved is stored as an event; a stamp change starts a new baseline. Events are written as CloudEvents JSON lines to `.repowise/events.jsonl` and read back here, oldest first.
+Typed events between consecutive index runs. Each `init` and `update` stores a snapshot of every component (ownership counts, bus factor, hotspots, dead code, governing decisions, provided contracts, test reach, attribution with coverage) under the analyzer and parser stamp it ran with. When an index run and the run right before it share a stamp, what moved is stored as an event. A stamp change starts a new baseline, and so does the first run after one that took no snapshot (events switched off, or the snapshot failed); a run on the commit already snapshotted, including `--working-tree` on it, is skipped. Events are written as CloudEvents JSON lines to `.repowise/events.jsonl` and read back here, oldest first.
 
 ```bash
 repowise events [--path PATH] [--since 7d|12h|ISO-DATE] [--kind KIND]... [--limit N] [--format table|json|jsonl]

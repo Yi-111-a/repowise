@@ -21,6 +21,8 @@ def _facts(**over):
         "criticality": None,
         "tags": [],
         "declared_owner": None,
+        "declared_owner_key": None,
+        "key_id": "k1",
         "file_count": 20,
         "bus_factor": {"basis": "measured", "value": 2, "owned_files": 20},
         "test_reach": {"basis": "inferred", "share": 0.6, "production_files": 15},
@@ -66,10 +68,35 @@ def test_a_redrawn_or_new_component_is_not_diffed():
 
 def test_declared_owner_change_is_a_shift():
     found = diff_snapshots(
-        {"c": _facts(declared_owner="team-a")}, {"c": _facts(declared_owner="team-b")}
+        {"c": _facts(declared_owner="team-a", declared_owner_key="x1")},
+        {"c": _facts(declared_owner="team-b", declared_owner_key="x2")},
     )
     assert [(k, s) for k, _, s, _ in found] == [("ownership_shift", "declared")]
     assert found[0][3] == {"basis": "declared", "previous_owner": "team-a", "owner": "team-b"}
+
+
+def test_an_owner_that_is_not_a_group_is_never_named():
+    # declared_owner is None for a user ref: only its keyed digest moved.
+    found = diff_snapshots(
+        {"c": _facts(declared_owner="team-a", declared_owner_key="x1")},
+        {"c": _facts(declared_owner=None, declared_owner_key="x2")},
+    )
+    assert found[0][3] == {"basis": "declared", "previous_owner": "team-a"}
+
+
+def test_owner_digests_under_another_key_are_not_compared():
+    after = _facts(key_id="k2", ownership={"main_owners": ["ccc", "ddd"], "active_main_owners": 0})
+    assert _kinds(_facts(), after) == []
+    renamed = _facts(key_id="k2", declared_owner_key="x2")
+    assert _kinds(_facts(declared_owner_key="x1"), renamed) == []
+
+
+def test_a_capped_recent_window_does_not_drive_activity_or_attribution():
+    reg = {"tags": ["pci"]}
+    capped = {"agent_share": 0.5, "recent_capped": True}
+    assert _kinds(_facts(**reg), _facts(**reg, attribution=capped)) == []
+    gone = {"active_main_owners": 0, "recent_capped": True}
+    assert _kinds(_facts(), _facts(ownership=gone)) == []
 
 
 def test_observed_owner_turnover_needs_enough_owned_files():
@@ -228,6 +255,57 @@ def test_settings_defaults_and_overrides(tmp_path):
     assert s.retention_days == 30 and s.compact_after_days == 30
     assert "new_hotspot" in s.kinds and "dead_code_growth" not in s.kinds
     assert "bogus" not in s.kinds and s.sinks == ("stdout",)
+    assert [e.split(":")[0] for e in s.errors] == [
+        "events.kinds.bogus",
+        "events.compact_after_days",
+    ]
+
+
+def test_settings_name_every_wrong_value(tmp_path):
+    (tmp_path / ".repowise").mkdir()
+    (tmp_path / ".repowise" / "config.yaml").write_text(
+        "events:\n  enabled: maybe\n  retention_days: '30'\n  kinds: [new_hotspot]\n"
+        "  sinks: jsonl\n  colour: red\n",
+        encoding="utf-8",
+    )
+    s = load_event_settings(tmp_path)
+    assert s.enabled is True and s.retention_days == 365 and s.sinks == ()
+    assert sorted(e.split(":")[0] for e in s.errors) == [
+        "events.colour",
+        "events.enabled",
+        "events.kinds",
+        "events.retention_days",
+        "events.sinks",
+    ]
+
+
+def test_doctor_reports_a_wrong_events_block(tmp_path):
+    from repowise.cli.commands.doctor_cmd.repo_checks import _events_config_check
+
+    assert _events_config_check(tmp_path) is None
+    (tmp_path / ".repowise").mkdir()
+    (tmp_path / ".repowise" / "config.yaml").write_text(
+        "events:\n  kinds: {nope: true}\n", encoding="utf-8"
+    )
+    check = _events_config_check(tmp_path)
+    assert check is not None and not check.ok and "events.kinds.nope" in check.detail
+
+
+def test_owner_key_is_kept_and_digests_are_not_plain_hashes(tmp_path):
+    import hashlib
+
+    key = snapshot_mod.owner_key(tmp_path)
+    assert key is not None and snapshot_mod.owner_key(tmp_path) == key
+    digest = snapshot_mod._keyed(key, "ann@example.com")
+    assert digest != hashlib.sha256(b"ann@example.com").hexdigest()[: len(digest)]
+
+
+def test_credentials_never_leave_in_the_source_url():
+    from repowise.core.events.store import _public_url
+
+    assert _public_url("https://user:tok@github.com/a/b.git") == "https://github.com/a/b.git"
+    assert _public_url("https://github.com/a/b") == "https://github.com/a/b"
+    assert _public_url(None) == ""
 
 
 # ---------------------------------------------------------------------------
@@ -297,6 +375,50 @@ async def test_same_stamp_runs_diff_and_reach_the_jsonl_sink(repo_db, monkeypatc
         assert [e.id for e in stored] == [events[0].id]
         assert stored[0].evidence["files"] == ["b.py"]
         assert await list_events(session, repo_id, kinds=["owner_inactive"]) == []
+
+
+@pytest.mark.asyncio
+async def test_a_run_without_a_snapshot_breaks_the_chain(repo_db, monkeypatch):
+    from repowise.core.events.store import record_gap
+    from repowise.core.persistence.database import get_session
+
+    factory, repo_id, root = repo_db
+    cfg = root / ".repowise" / "config.yaml"
+    on = "events:\n  kinds: {new_hotspot: true}\n"
+    hot = {"c": _facts(hotspots=["a.py", "b.py"])}
+    await _run(factory, repo_id, head="a" * 40, facts={"c": _facts()}, monkeypatch=monkeypatch)
+    cfg.write_text("events:\n  enabled: false\n", encoding="utf-8")
+    await _run(factory, repo_id, head="b" * 40, facts=hot, monkeypatch=monkeypatch)
+    cfg.write_text(on, encoding="utf-8")
+    assert await _run(factory, repo_id, head="c" * 40, facts=hot, monkeypatch=monkeypatch) == []
+
+    # A failed snapshot leaves the same marker.
+    async with get_session(factory) as session:
+        await record_gap(session, repo_id, "failed")
+    hotter = {"c": _facts(hotspots=["a.py", "b.py", "c.py"])}
+    assert await _run(factory, repo_id, head="d" * 40, facts=hotter, monkeypatch=monkeypatch) == []
+    more = {"c": _facts(hotspots=["a.py", "b.py", "c.py", "d.py"])}
+    events = await _run(factory, repo_id, head="e" * 40, facts=more, monkeypatch=monkeypatch)
+    assert [e.evidence["files"] for e in events] == [["d.py"]]
+
+
+@pytest.mark.asyncio
+async def test_a_commit_pair_seen_again_is_a_new_event(repo_db, monkeypatch):
+    factory, repo_id, _ = repo_db
+    quiet, hot = {"c": _facts()}, {"c": _facts(hotspots=["a.py", "b.py"])}
+    ids = []
+    for head, facts in (("a", quiet), ("b", hot), ("a", quiet), ("b", hot)):
+        events = await _run(factory, repo_id, head=head * 40, facts=facts, monkeypatch=monkeypatch)
+        ids += [e.id for e in events]
+    assert len(ids) == 2 and len(set(ids)) == 2
+
+    # Runs with no commit at all still diff, each as its own occurrence.
+    hotter = {"c": _facts(hotspots=["a.py", "b.py", "c.py"])}
+    await _run(factory, repo_id, head=None, facts=hot, monkeypatch=monkeypatch)
+    first = await _run(factory, repo_id, head=None, facts=hotter, monkeypatch=monkeypatch)
+    await _run(factory, repo_id, head=None, facts=hot, monkeypatch=monkeypatch)
+    second = await _run(factory, repo_id, head=None, facts=hotter, monkeypatch=monkeypatch)
+    assert len(first) == len(second) == 1 and first[0].id != second[0].id
 
 
 @pytest.mark.asyncio

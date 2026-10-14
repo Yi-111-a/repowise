@@ -55,14 +55,23 @@ def _get(facts: Mapping[str, Any], key: str) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _same_key(before: Mapping[str, Any], after: Mapping[str, Any]) -> bool:
+    """Owner digests compare only when both runs used the same digest key."""
+    return bool(before.get("key_id")) and before.get("key_id") == after.get("key_id")
+
+
 def _ownership(before: Mapping[str, Any], after: Mapping[str, Any]) -> Iterator[tuple]:
-    was, now = before.get("declared_owner"), after.get("declared_owner")
+    if not _same_key(before, after):
+        return
+    was, now = before.get("declared_owner_key"), after.get("declared_owner_key")
     if was and now and was != now:
-        yield "ownership_shift", "declared", {
-            "basis": "declared",
-            "previous_owner": was,
-            "owner": now,
-        }
+        ev: dict[str, Any] = {"basis": "declared"}
+        # Group refs are named; any other owner is reported as changed, unnamed.
+        if before.get("declared_owner"):
+            ev["previous_owner"] = before["declared_owner"]
+        if after.get("declared_owner"):
+            ev["owner"] = after["declared_owner"]
+        yield "ownership_shift", "declared", ev
         return
     a, b = _get(before, "ownership"), _get(after, "ownership")
     if min(a.get("owned_files", 0), b.get("owned_files", 0)) < MIN_OWNED_FILES:
@@ -80,6 +89,8 @@ def _ownership(before: Mapping[str, Any], after: Mapping[str, Any]) -> Iterator[
 
 def _owner_inactive(before: Mapping[str, Any], after: Mapping[str, Any]) -> Iterator[tuple]:
     a, b = _get(before, "ownership"), _get(after, "ownership")
+    if not _same_key(before, after) or not b.get("main_owners") or b.get("recent_capped"):
+        return
     if b.get("owned_files", 0) < MIN_OWNED_FILES or a.get("main_owners") != b.get("main_owners"):
         return
     # Others still change it: a quiet component is stable, not abandoned.
@@ -184,6 +195,8 @@ def _attribution(before: Mapping[str, Any], after: Mapping[str, Any]) -> Iterato
         return
     a, b = _get(before, "attribution"), _get(after, "attribution")
     if a.get("agent_share") is None or b.get("agent_share") is None:
+        return
+    if a.get("recent_capped") or b.get("recent_capped"):
         return
     if min(a.get("commits", 0), b.get("commits", 0)) < ATTRIBUTION_MIN_COMMITS:
         return

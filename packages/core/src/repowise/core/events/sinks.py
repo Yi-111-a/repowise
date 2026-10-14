@@ -35,6 +35,10 @@ def _lines(events: Sequence[EngineEvent]) -> str:
 
 
 class JsonlSink:
+    """Appends to one local file. Ceiling: the file is never rotated or trimmed
+    (retention applies to the store only); a consumer that needs a bounded file
+    truncates it after reading, or reads the pull API instead."""
+
     async def deliver(self, events: Sequence[EngineEvent], *, repo_root: Path) -> None:
         path = Path(repo_root) / ".repowise" / EVENTS_FILE
         path.parent.mkdir(parents=True, exist_ok=True)

@@ -76,6 +76,7 @@ repo root on first `init`.
 ├── omissions/           # Distill omission store + savings ledger (omissions.db)
 ├── config.yaml          # Provider, model, embedder, exclude patterns, distill/mcp/refactoring blocks
 ├── events.jsonl         # Typed events as CloudEvents JSON lines (the jsonl event sink)
+├── events.key           # Random key the owner digests in component snapshots are made with
 ├── health-rules.json    # Per-file code-health marker overrides
 ├── state.json           # Last sync commit, page counts, token usage
 ├── mcp.json             # MCP server configuration
@@ -654,7 +655,7 @@ events:
   sinks: [jsonl]           # jsonl (.repowise/events.jsonl), stdout, or a plugin's sink
 ```
 
-Two consecutive runs under the same analyzer and parser stamp diff into typed events; a stamp change starts a new baseline. Severity follows the component's `repowise.dev/criticality`. `new_hotspot` is off by default; every other kind is on. Read them with `repowise events` or `GET /api/repos/{id}/events`.
+An index run diffs into typed events against the run right before it when both ran under the same analyzer and parser stamp; a stamp change, or a run in between that took no snapshot, starts a new baseline. Owners are compared as keyed digests made with a random per-repository key in `.repowise/events.key`; a declared owner is named only when it is a group. `repowise doctor` names any value in this block that fell back to its default. Severity follows the component's `repowise.dev/criticality`. `new_hotspot` is off by default; every other kind is on. Read them with `repowise events` or `GET /api/repos/{id}/events`.
 
 ### The `refactoring:` block
 

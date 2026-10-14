@@ -538,6 +538,13 @@ async def write_read_snapshots(session: AsyncSession, repo_id: str) -> None:
             await record_snapshot(session, repo_id)
     except Exception as exc:  # history skips a run; the index is unaffected
         logger.warning("component snapshot not written: %s", exc)
+        try:  # so the next snapshot is a baseline, not a diff across the gap
+            from repowise.core.events.store import record_gap
+
+            async with session.begin_nested():
+                await record_gap(session, repo_id, "failed")
+        except Exception as gap_exc:
+            logger.warning("component snapshot gap not recorded: %s", gap_exc)
 
 
 def _view(ruled: dict[str, Any], states: dict[str, ActionStateRecord], now: datetime) -> dict:

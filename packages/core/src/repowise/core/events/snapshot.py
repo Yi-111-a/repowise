@@ -4,13 +4,19 @@ The figures reuse the component rollups (:func:`component_rollups`) and add
 what a diff needs on top: the full hotspot set, observed ownership as opaque
 digests, governing decisions with their staleness, the provided contract set,
 and the agent share of recent commits with its coverage. Nothing here names a
-person: owners are counted and digested, never listed.
+person: owners are counted, and the main-owner set is kept only as HMAC digests
+under a per-repository random key (``.repowise/events.key``), which is all a
+set comparison between two runs needs. A digest cannot be checked against a
+guessed email without the key. A declared owner is named only when it is a
+group ref.
 """
 
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
+import secrets
 from collections import Counter
 from datetime import timedelta
 from pathlib import Path
@@ -25,6 +31,12 @@ RECENT_DAYS = 90
 #: A governing decision at or above this staleness counts as stale
 #: (the threshold ``get_stale_decisions`` uses).
 STALE_THRESHOLD = 0.5
+#: Ceiling on ``(file, commit)`` rows read for the recent window, newest first.
+#: Past it the window is partial and says so (``recent_capped``); the rules
+#: that read recent activity skip it. Upgrade path: aggregate per component in SQL.
+MAX_RECENT_ROWS = 200_000
+#: Per-repository key the owner digests are made with.
+OWNER_KEY_FILE = "events.key"
 
 
 def current_stamp() -> str:
@@ -42,6 +54,28 @@ def current_stamp() -> str:
 
 def _digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+
+
+def owner_key(repo_root: Path) -> bytes | None:
+    """The repository's digest key, made on first use; ``None`` when it cannot
+    be read or written. A new key gets a new id, so the next diff of owner
+    sets is skipped rather than reading every owner as replaced."""
+    path = Path(repo_root) / ".repowise" / OWNER_KEY_FILE
+    try:
+        if path.is_file():
+            key = bytes.fromhex(path.read_text(encoding="ascii").strip())
+            if len(key) >= 16:
+                return key
+        path.parent.mkdir(parents=True, exist_ok=True)
+        key = secrets.token_bytes(32)
+        path.write_text(key.hex(), encoding="ascii")
+        return key
+    except (OSError, ValueError):
+        return None
+
+
+def _keyed(key: bytes, text: str) -> str:
+    return hmac.new(key, text.encode("utf-8"), hashlib.sha256).hexdigest()[:16]
 
 
 async def collect_facts(
@@ -68,10 +102,14 @@ async def collect_facts(
     rollups = await component_rollups(session, repository_id, files, found.test_files)
     git_rows = await _git_rows(session, repository_id)
     recent = await _recent_commit_files(session, repository_id)
+    capped = len(recent) >= MAX_RECENT_ROWS
+    key = owner_key(repo_root)
+    key_id = _digest(key.hex()) if key else None
     governing, stale = await _decisions(session, repository_id)
     contracts = _provided_contracts(repo_root, head_commit)
 
     from repowise.core.analysis.owners import people_resolver
+    from repowise.core.components.catalog import owner_group_name
 
     resolve = people_resolver(git_rows.values(), recent)
     recent_by_file: dict[str, list[dict[str, Any]]] = {}
@@ -89,19 +127,22 @@ async def collect_facts(
             "definition": _digest(json.dumps([sorted(comp.paths), comp.root, comp.source])),
             "criticality": comp.criticality,
             "tags": sorted(comp.tags),
-            "declared_owner": comp.owner,
+            # Named only as a group; any other owner ref is compared by digest.
+            "declared_owner": owner_group_name(comp.owner),
+            "declared_owner_key": _keyed(key, comp.owner) if key and comp.owner else None,
+            "key_id": key_id,
             "file_count": len(paths),
             "health": rolled.get("health"),
             "bus_factor": rolled.get("bus_factor"),
             "test_reach": rolled.get("test_reach"),
             "dead_code": rolled.get("dead_code"),
             "hotspots": sorted(p for p in paths if git_rows.get(p, {}).get("is_hotspot")),
-            "ownership": _ownership(paths, git_rows, commits.values(), resolve),
+            "ownership": _ownership(paths, git_rows, commits.values(), resolve, key, capped),
             "decisions": _component_decisions(paths, governing, stale),
             "contracts": _component_contracts(paths, contracts),
         }
         if attribution:
-            facts["attribution"] = _attribution(commits.values())
+            facts["attribution"] = _attribution(commits.values(), capped)
         out[comp.name] = facts
     return out
 
@@ -153,6 +194,8 @@ async def _recent_commit_files(session: Any, repository_id: str) -> list[dict[st
             GitCommitFile.repository_id == repository_id,
             GitCommit.committed_at >= newest - timedelta(days=RECENT_DAYS),
         )
+        .order_by(GitCommit.committed_at.desc())
+        .limit(MAX_RECENT_ROWS)
     )
     return [dict(r._mapping) for r in rows]
 
@@ -216,6 +259,8 @@ def _ownership(
     git_rows: dict[str, dict[str, Any]],
     commits: Any,
     resolve: Any,
+    key: bytes | None,
+    capped: bool,
 ) -> dict[str, Any]:
     """Observed ownership as counts and opaque digests of the main owners.
 
@@ -244,9 +289,11 @@ def _ownership(
     return {
         "owned_files": owned,
         "owner_count": len(owners),
-        "main_owners": sorted(_digest(k) for k in main),
+        # Without a key there is nothing safe to compare, so no set is kept.
+        "main_owners": sorted(_keyed(key, k) for k in main) if key else None,
         "active_main_owners": sum(1 for k in main if k in recent_authors),
         "recent_commits": len({c["sha"] for c in commits}),
+        "recent_capped": capped,
         "window_days": RECENT_DAYS,
     }
 
@@ -270,7 +317,7 @@ def _component_contracts(
     return {"basis": "measured", "provided": dict(sorted(provided.items()))}
 
 
-def _attribution(commits: Any) -> dict[str, Any]:
+def _attribution(commits: Any, capped: bool) -> dict[str, Any]:
     from repowise.core.attribution import AGENT, HUMAN_ATTESTED, attribution_share, commit_label
 
     labels = Counter(commit_label(c["attribution"], c["agent_name"]) for c in commits)
@@ -283,4 +330,5 @@ def _attribution(commits: Any) -> dict[str, Any]:
         "coverage": None if share.coverage is None else round(share.coverage, 3),
         "agent_share": None if share.agent_share is None else round(share.agent_share, 3),
         "suppressed_reason": share.suppressed_reason,
+        "recent_capped": capped,
     }
