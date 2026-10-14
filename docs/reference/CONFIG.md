@@ -17,6 +17,7 @@ The `.repowise/` directory, provider setup, API keys, and what's customizable.
 [`policies.yaml`](#repowisepoliciesyaml) ·
 [The `security:` block](#the-security-block) ·
 [The `attribution:` block](#the-attribution-block) ·
+[The `events:` block](#the-events-block) ·
 [The `refactoring:` block](#the-refactoring-block) ·
 [The `assertions:` block](#the-assertions-block)
 
@@ -74,6 +75,7 @@ repo root on first `init`.
 ├── lancedb/             # Vector search index (LanceDB)
 ├── omissions/           # Distill omission store + savings ledger (omissions.db)
 ├── config.yaml          # Provider, model, embedder, exclude patterns, distill/mcp/refactoring blocks
+├── events.jsonl         # Typed events as CloudEvents JSON lines (the jsonl event sink)
 ├── health-rules.json    # Per-file code-health marker overrides
 ├── state.json           # Last sync commit, page counts, token usage
 ├── mcp.json             # MCP server configuration
@@ -640,6 +642,19 @@ attribution:
 The same block in `~/.repowise/config.yaml` applies to every repository, and the stricter value wins per key: `enabled: false` in either file, the lower capture level, and the agents both files list. With `enabled: false` nothing about AI is stored or shown in the API, CLI, MCP, web or wiki, and `DO_NOT_TRACK=1` keeps capture off. `repowise attribution status` shows the effective, repo and user values with the coverage of the indexed history.
 
 `capture: local` records the listed agents' edits as line hashes in `.repowise/attribution/`; `capture: notes` also writes git-ai notes on `refs/notes/ai`. What each level stores, and what leaves the machine, is in [ATTRIBUTION.md](../layers/ATTRIBUTION.md). The same consent lets `repowise attribution backfill --agent claude-code,codex` bind past commits from the transcripts these agents keep on this machine.
+
+### The `events:` block
+
+```yaml
+events:
+  enabled: true            # snapshot components at each index run and diff them
+  retention_days: 365      # older runs and events are dropped
+  compact_after_days: 30   # older runs keep one per ISO week
+  kinds: {new_hotspot: true}
+  sinks: [jsonl]           # jsonl (.repowise/events.jsonl), stdout, or a plugin's sink
+```
+
+Two consecutive runs under the same analyzer and parser stamp diff into typed events; a stamp change starts a new baseline. Severity follows the component's `repowise.dev/criticality`. `new_hotspot` is off by default; every other kind is on. Read them with `repowise events` or `GET /api/repos/{id}/events`.
 
 ### The `refactoring:` block
 

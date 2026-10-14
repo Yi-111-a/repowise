@@ -698,6 +698,17 @@ export interface ClaudeMdResponse {
   sections?: string[];
 }
 
+export interface CloudEvent {
+  specversion: string;
+  id: string;
+  source: string;
+  type: string;
+  time: string;
+  datacontenttype: string;
+  subject?: string | null;
+  data: Record<string, unknown>;
+}
+
 /**
  * Files that historically change together with one file.
  *
@@ -1567,6 +1578,10 @@ export interface EpisodeSummary {
   birth_at: string | null;
   last_seen_at: string | null;
   still_true?: string | null;
+}
+
+export interface EventListResponse {
+  events: CloudEvent[];
 }
 
 /** One checklist row: what was found, whether it needs a look, how it is known. */
