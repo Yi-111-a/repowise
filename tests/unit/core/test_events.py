@@ -296,6 +296,9 @@ def test_owner_key_is_kept_and_digests_are_not_plain_hashes(tmp_path):
 
     key = snapshot_mod.owner_key(tmp_path)
     assert key is not None and snapshot_mod.owner_key(tmp_path) == key
+    # Some repos commit .repowise/: the key gets its own ignore rule.
+    ignored = (tmp_path / ".gitignore").read_text(encoding="utf-8").splitlines()
+    assert ".repowise/events.key" in ignored
     digest = snapshot_mod._keyed(key, "ann@example.com")
     assert digest != hashlib.sha256(b"ann@example.com").hexdigest()[: len(digest)]
 

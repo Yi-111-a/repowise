@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import secrets
 from collections import Counter
 from datetime import timedelta
@@ -23,6 +24,8 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import func, select
+
+logger = logging.getLogger(__name__)
 
 #: Bumped when a fact's definition changes; part of the stamp.
 SNAPSHOT_FACTS_VERSION = 1
@@ -60,17 +63,21 @@ def owner_key(repo_root: Path) -> bytes | None:
     """The repository's digest key, made on first use; ``None`` when it cannot
     be read or written. A new key gets a new id, so the next diff of owner
     sets is skipped rather than reading every owner as replaced."""
+    from repowise.core.repo_config import write_private_file
+
     path = Path(repo_root) / ".repowise" / OWNER_KEY_FILE
     try:
         if path.is_file():
             key = bytes.fromhex(path.read_text(encoding="ascii").strip())
             if len(key) >= 16:
                 return key
-        path.parent.mkdir(parents=True, exist_ok=True)
         key = secrets.token_bytes(32)
-        path.write_text(key.hex(), encoding="ascii")
+        write_private_file(
+            repo_root, OWNER_KEY_FILE, key.hex(), comment="repowise owner-digest key (local)"
+        )
         return key
-    except (OSError, ValueError):
+    except (OSError, ValueError) as exc:
+        logger.warning("owner-digest key unavailable, owner sets not kept: %s", exc)
         return None
 
 
