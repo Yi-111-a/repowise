@@ -140,7 +140,7 @@
       "id": "proposed-dec1",
       "type": "proposed_decision",
       "title": "Keep the engine single-threaded",
-      "description": "Auto-proposed decision awaiting review",
+      "description": "Decision recorded by hand, awaiting review",
       "severity": "medium",
       "target_id": "dec1"
     },
