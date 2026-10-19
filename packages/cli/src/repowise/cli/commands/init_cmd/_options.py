@@ -95,6 +95,17 @@ class InitRun:
     # template renderer. Treated exactly like ``--index-only`` from the
     # generation phase onward.
     no_provider: bool = False
+    total_phases: int = 4
+    result: Any = None
+    # PhaseTimingRecorder shared by every stage.
+    recorder: Any = None
+    run_warnings: list[str] = field(default_factory=list)
+    # Embedder of the template wiki, None when none was rendered.
+    index_only_embedder: str | None = None
+    cost_declined: bool = False
+    effective_index_only: bool = False
+    phase_timings: dict[str, float] = field(default_factory=dict)
+    scope_embedder: str | None = None
 
 
 def resolve_structural_flags(opts: InitOptions) -> InitOptions:
